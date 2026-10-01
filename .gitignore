@@ -1,0 +1,6 @@
+.DS_Store
+.Rhistory
+__pycache__/
+*.pyc
+*.cube
+viewer_out/

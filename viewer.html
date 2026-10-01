@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orbital viewer</title>
+<script src="https://3dmol.org/build/3Dmol-min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="data/meta.js"></script>
+<style>
+  :root { --border: #d6d9de; --muted: #6b7280; --accent: #2563eb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: #1f2328; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 6px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 16px; align-items: baseline; }
+  header h1 { font-size: 15px; margin: 0; }
+  header .sub { color: var(--muted); }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #viewer-pane { flex: 1.3; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; }
+  #viewer { flex: 1; position: relative; }
+  #loading { position: absolute; top: 8px; left: 8px; background: #fffc; padding: 2px 8px; border-radius: 4px;
+             color: var(--muted); display: none; z-index: 10; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 6px 10px;
+              border-top: 1px solid var(--border); }
+  .controls label { display: inline-flex; gap: 4px; align-items: center; }
+  #side { flex: 1; display: flex; flex-direction: column; min-width: 380px; overflow: hidden; }
+  section { border-bottom: 1px solid var(--border); padding: 6px 10px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 2px 0 6px; }
+  #spectrum { height: 260px; }
+  #state-sec { max-height: 38%; overflow: auto; }
+  #orb-sec { flex: 1; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 2px 6px; text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 1px 8px; border: 1px solid var(--border); background: #f6f8fa; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #eef1f4; }
+  button:disabled { color: #aaa; cursor: default; background: #fafafa; }
+  button.on { background: #dbeafe; border-color: #93c5fd; }
+  .orb-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+  .orb-row input[type=color] { width: 22px; height: 18px; padding: 0; border: none; background: none; }
+  .orb-row .info { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .group { margin: 6px 0 2px; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; }
+  code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 12px; user-select: all; }
+  .statehead { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .statenav { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Orbital viewer</h1>
+  <span class="sub" id="subtitle"></span>
+</header>
+<div id="main">
+  <div id="viewer-pane">
+    <div id="viewer"><div id="loading">loading…</div></div>
+    <div class="controls">
+      <label>Isovalue <input id="iso" type="range" min="0.002" max="0.08" step="0.001" value="0.02">
+        <span id="iso-val">0.020</span></label>
+      <label>Opacity <input id="opacity" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+      <label>Atoms <select id="style">
+        <option value="ballstick">ball &amp; stick</option>
+        <option value="stick">stick</option>
+        <option value="line">line</option>
+        <option value="none">hidden</option>
+      </select></label>
+      <button id="reset-view">Reset view</button>
+      <button id="hide-all">Hide all orbitals</button>
+    </div>
+  </div>
+  <div id="side">
+    <section>
+      <h2>Spectrum</h2>
+      <div class="controls" style="border:0;padding:0 0 4px">
+        <label><input type="radio" name="spec" value="abs" checked> Absorption</label>
+        <label><input type="radio" name="spec" value="cd"> CD</label>
+        <label>x: <select id="xunit"><option value="ev">eV</option><option value="nm">nm</option></select></label>
+        <label>FWHM <input id="fwhm" type="number" min="0.01" max="1" step="0.01" value="0.10" style="width:56px"> eV</label>
+      </div>
+      <div id="spectrum"></div>
+      <div class="hint">Click a stick (or the envelope) to select a state. Filled markers = NTO cubes available.</div>
+    </section>
+    <section id="state-sec">
+      <h2>Selected state</h2>
+      <div class="statenav">
+        <button id="prev">◀</button>
+        <select id="state-select"></select>
+        <button id="next">▶</button>
+        <label style="margin-left:auto"><input type="checkbox" id="autoshow" checked> auto-show NTOs</label>
+      </div>
+      <div id="state-detail"></div>
+    </section>
+    <section id="orb-sec">
+      <h2>Orbitals</h2>
+      <div id="orb-list"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+"use strict";
+const META = window.VIEWER_META;
+const HC = 1239.84198;  // eV·nm
+const PALETTE = ["#1f4e9e", "#c85a00", "#1b7a3a", "#6a3d9a", "#b2182b", "#00707a", "#7a4a1c", "#b0306a"];
+
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d = 3) => (x === null || x === undefined) ? "–" : x.toFixed(d);
+
+// ---------------------------------------------------------------- state
+const states = META.states.filter(s => s.mult === 1);
+const stateByN = new Map(states.map(s => [s.n, s]));
+const orbs = META.orbitals.map(o => ({ ...o, shown: false, color: null, vol: null, shapes: [], loading: null }));
+const orbById = new Map(orbs.map(o => [o.id, o]));
+let selected = states.length ? states[0].n : null;
+let specMode = "abs", xunit = "ev";
+
+function ntoCubes(n) { return orbs.filter(o => o.kind === "nto" && o.state === n); }
+function moCube(i) { return orbs.find(o => o.kind === "mo" && o.index === i); }
+function orbName(i) {
+  const h = META.homo; if (h == null) return String(i);
+  const d = i - h;
+  return d === 0 ? "HOMO" : d === 1 ? "LUMO" : d < 0 ? `HOMO${d}` : `LUMO+${d - 1}`;
+}
+function orbEnergy(i) { const o = META.orbitalEnergies.find(e => e.i === i); return o ? o.ev : null; }
+
+// ---------------------------------------------------------------- 3D viewer
+const viewer = $3Dmol.createViewer($("viewer"), { backgroundColor: "white" });
+let model = null;
+if (META.xyz) { model = viewer.addModel(META.xyz, "xyz"); }
+function applyStyle() {
+  if (!model) return;
+  const v = $("style").value;
+  const st = v === "ballstick" ? { stick: { radius: 0.12 }, sphere: { scale: 0.22 } }
+           : v === "stick" ? { stick: { radius: 0.15 } }
+           : v === "line" ? { line: {} } : {};
+  viewer.setStyle({}, st);
+  viewer.render();
+}
+applyStyle();
+viewer.zoomTo(); viewer.render();
+
+// Cube payloads are delivered by data/orb_XXX.js calling window.__orbData (works from file://).
+const waiting = {};
+window.__orbData = (id, payload) => { if (waiting[id]) waiting[id](payload); };
+function fetchPayload(o) {
+  return new Promise((resolve, reject) => {
+    waiting[o.id] = resolve;
+    const s = document.createElement("script");
+    s.src = "data/" + o.file;
+    s.onerror = () => reject(new Error("could not load " + o.file));
+    document.head.appendChild(s);
+  });
+}
+async function decodeVolume(p) {
+  const bin = Uint8Array.from(atob(p.data), c => c.charCodeAt(0));
+  const stream = new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const ints = new Int16Array(await new Response(stream).arrayBuffer());
+  const data = new Float32Array(ints.length);
+  for (let i = 0; i < ints.length; i++) data[i] = ints[i] * p.scale;
+  // Header-only cube (bohr units, no atoms) so 3Dmol sets up the grid; then drop in the data.
+  const hdr = ["orbital", "viewer", `0 ${p.origin.join(" ")}`,
+               ...p.axes.map((a, k) => `${p.n[k]} ${a.join(" ")}`)].join("\n") + "\n";
+  const vol = new $3Dmol.VolumeData(hdr, "cube");
+  vol.data = data;
+  return vol;
+}
+function loadVolume(o) {
+  if (!o.loading) {
+    o.loading = fetchPayload(o).then(decodeVolume).then(v => (o.vol = v));
+  }
+  return o.loading;
+}
+
+function tint(hex, f = 0.55) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c) => Math.round(c + (255 - c) * f);
+  const r = mix(n >> 16), g = mix((n >> 8) & 255), b = mix(n & 255);
+  return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+function nextColor() {
+  const used = new Set(orbs.filter(o => o.shown).map(o => o.color));
+  return PALETTE.find(c => !used.has(c)) || PALETTE[orbs.filter(o => o.shown).length % PALETTE.length];
+}
+function drawOrbital(o) {
+  o.shapes.forEach(s => viewer.removeShape(s));
+  o.shapes = [];
+  if (!o.shown || !o.vol) return;
+  const iso = parseFloat($("iso").value), op = parseFloat($("opacity").value);
+  o.shapes.push(viewer.addIsosurface(o.vol, { isoval: iso, color: o.color, opacity: op, smoothness: 1 }));
+  o.shapes.push(viewer.addIsosurface(o.vol, { isoval: -iso, color: tint(o.color), opacity: op, smoothness: 1 }));
+}
+let busy = 0;
+function setBusy(d) { busy += d; $("loading").style.display = busy > 0 ? "block" : "none"; }
+async function setShown(o, on) {
+  if (on === o.shown) return;
+  o.shown = on;
+  if (on && !o.color) o.color = nextColor();
+  if (on && !o.vol) {
+    setBusy(1);
+    try { await loadVolume(o); } catch (e) { alert(e.message); o.shown = false; }
+    setBusy(-1);
+  }
+  drawOrbital(o); viewer.render(); renderOrbList(); renderStateDetail();
+}
+function redrawAll() { orbs.forEach(drawOrbital); viewer.render(); }
+
+// ---------------------------------------------------------------- spectrum
+function stateValue(s) { return specMode === "abs" ? s.fosc : s.rot; }
+function toX(ev) { return xunit === "ev" ? ev : HC / ev; }
+function envelope() {
+  const fwhm = Math.max(0.005, parseFloat($("fwhm").value) || 0.1);
+  const a = 4 * Math.LN2 / (fwhm * fwhm);
+  const evs = states.map(s => s.ev);
+  const lo = Math.min(...evs) - 3 * fwhm, hi = Math.max(...evs) + 3 * fwhm;
+  const xs = [], ys = [];
+  for (let i = 0; i <= 800; i++) {
+    const e = lo + (hi - lo) * i / 800;
+    let y = 0;
+    for (const s of states) { const v = stateValue(s); if (v) y += v * Math.exp(-a * (e - s.ev) ** 2); }
+    xs.push(toX(e)); ys.push(y);
+  }
+  return { xs, ys, a };
+}
+function drawSpectrum() {
+  if (!states.length) { $("spectrum").textContent = "No excited states found."; return; }
+  const env = envelope();
+  const sx = [], sy = [];
+  for (const s of states) { const v = stateValue(s) || 0; sx.push(toX(s.ev), toX(s.ev), null); sy.push(0, v, null); }
+  const has = states.map(s => ntoCubes(s.n).length > 0);
+  const traces = [
+    { x: env.xs, y: env.ys, mode: "lines", name: "envelope", line: { color: "#9ca3af", width: 1.5 },
+      hoverinfo: "skip" },
+    { x: sx, y: sy, mode: "lines", name: "sticks", line: { color: "#374151", width: 1 }, hoverinfo: "skip" },
+    { x: states.map(s => toX(s.ev)), y: states.map(s => stateValue(s) || 0), mode: "markers", name: "states",
+      customdata: states.map(s => s.n),
+      marker: { size: 7, color: has.map(h => h ? "#2563eb" : "white"), line: { color: "#2563eb", width: 1.2 } },
+      text: states.map(s => `S${s.n}  ${fmt(s.ev)} eV / ${fmt(s.nm, 1)} nm<br>f = ${s.fosc ?? "–"}` +
+                            `<br>R = ${s.rot ?? "–"}` + (ntoCubes(s.n).length ? "<br>NTO cubes ✓" : "")),
+      hovertemplate: "%{text}<extra></extra>" },
+  ];
+  const sel = stateByN.get(selected);
+  if (sel) {
+    traces.push({ x: [toX(sel.ev), toX(sel.ev)], y: [0, stateValue(sel) || 0], mode: "lines+markers",
+                  name: "selected", line: { color: "#dc2626", width: 3 }, marker: { size: [0, 10], color: "#dc2626" },
+                  hoverinfo: "skip" });
+  }
+  const layout = {
+    margin: { l: 55, r: 10, t: 6, b: 38 }, showlegend: false,
+    xaxis: { title: xunit === "ev" ? "Energy (eV)" : "Wavelength (nm)" },
+    yaxis: { title: specMode === "abs" ? "f" : "R (10⁻⁴⁰ cgs)", zeroline: true },
+    hovermode: "closest",
+  };
+  Plotly.react("spectrum", traces, layout, { displaylogo: false, responsive: true });
+}
+function hookSpectrumClicks() {
+  $("spectrum").on("plotly_click", (ev) => {
+    const p = ev.points[0];
+    if (p.data.name === "states") return selectState(p.customdata);
+    // Clicked the envelope/sticks: pick the state contributing most at that x.
+    const e = xunit === "ev" ? p.x : HC / p.x;
+    const a = 4 * Math.LN2 / Math.pow(parseFloat($("fwhm").value) || 0.1, 2);
+    let best = null, bv = -1;
+    for (const s of states) {
+      const c = Math.abs(stateValue(s) || 0) * Math.exp(-a * (e - s.ev) ** 2);
+      if (c > bv) { bv = c; best = s; }
+    }
+    if (best) selectState(best.n);
+  });
+}
+
+// ---------------------------------------------------------------- state panel
+function selectState(n) {
+  selected = n;
+  $("state-select").value = String(n);
+  if ($("autoshow").checked) {
+    const cubes = ntoCubes(n);
+    orbs.filter(o => o.kind === "nto" && o.state !== n && o.shown).forEach(o => setShown(o, false));
+    // Show the dominant pair (the cubes matching the largest-n pair, or all cubes if unknown).
+    const st = stateByN.get(n);
+    const top = st && st.ntos[0];
+    cubes.filter(o => !top || o.index == null || o.index === top.from || o.index === top.to)
+         .sort((a, b) => (a.role === "hole" ? 0 : 1) - (b.role === "hole" ? 0 : 1))
+         .forEach(o => setShown(o, true));
+  }
+  drawSpectrum(); renderStateDetail();
+}
+
+function cubeCommand(n) {
+  return `./make_cubes.sh ${META.runDir || "RUN_DIR"} ${n}`;
+}
+function renderStateDetail() {
+  const s = stateByN.get(selected);
+  const el = $("state-detail");
+  if (!s) { el.innerHTML = ""; return; }
+  let h = `<div class="statehead">S${s.n} — ${fmt(s.ev)} eV / ${fmt(s.nm, 1)} nm` +
+          `<span style="font-weight:400;color:var(--muted)"> &nbsp; f = ${s.fosc ?? "–"} &nbsp; R = ${s.rot ?? "–"}</span></div>`;
+
+  // NTO pairs
+  const cubes = ntoCubes(s.n);
+  if (s.ntos.length) {
+    h += `<table><tr><th>NTO pair</th><th class="num">n</th><th></th></tr>`;
+    const missing = [];
+    s.ntos.forEach((p, k) => {
+      let pc = cubes.filter(o => o.index === p.from || o.index === p.to);
+      if (!pc.length && k === 0) pc = cubes.filter(o => o.index == null);
+      const on = pc.length && pc.every(o => o.shown);
+      if (!pc.length && p.n >= 0.1) missing.push(p.from, p.to);
+      h += `<tr><td>${p.from} → ${p.to}</td><td class="num">${fmt(p.n, 4)}</td><td>` +
+           (pc.length ? `<button class="${on ? "on" : ""}" data-toggle="${pc.map(o => o.id).join(",")}">${on ? "hide" : "show"}</button>`
+                      : `<span class="hint">no cube</span>`) + `</td></tr>`;
+    });
+    h += `</table>`;
+    if (missing.length) {
+      h += `<div class="hint" style="margin-top:4px">Generate on the cluster: <code>${cubeCommand(s.n)}</code></div>`;
+    }
+  }
+
+  // Canonical MO contributions
+  if (s.contribs.length) {
+    h += `<table style="margin-top:6px"><tr><th>MO excitation</th><th class="num">weight</th><th class="num">c</th><th></th></tr>`;
+    for (const c of [...s.contribs].sort((a, b) => b.w - a.w)) {
+      const pc = [moCube(c.from), moCube(c.to)].filter(Boolean);
+      const on = pc.length && pc.every(o => o.shown);
+      h += `<tr><td title="${fmt(orbEnergy(c.from), 2)} → ${fmt(orbEnergy(c.to), 2)} eV">` +
+           `${c.from} (${orbName(c.from)}) → ${c.to} (${orbName(c.to)})</td>` +
+           `<td class="num">${(100 * c.w).toFixed(1)}%</td><td class="num">${fmt(c.c, 3)}</td><td>` +
+           (pc.length ? `<button class="${on ? "on" : ""}" data-toggle="${pc.map(o => o.id).join(",")}">${on ? "hide" : "show"}</button>` : "") +
+           `</td></tr>`;
+    }
+    h += `</table>`;
+  }
+  el.innerHTML = h;
+  el.querySelectorAll("button[data-toggle]").forEach(b => b.onclick = () => {
+    const list = b.dataset.toggle.split(",").map(id => orbById.get(id));
+    const on = !list.every(o => o.shown);
+    list.forEach(o => setShown(o, on));
+  });
+}
+
+// ---------------------------------------------------------------- orbital list
+function renderOrbList() {
+  const el = $("orb-list");
+  if (!orbs.length) { el.innerHTML = `<div class="hint">No cube files were included.</div>`; return; }
+  const groups = [];
+  const ntoStates = [...new Set(orbs.filter(o => o.kind === "nto").map(o => o.state))].sort((a, b) => a - b);
+  for (const n of ntoStates) groups.push([`S${n} NTOs`, ntoCubes(n).sort((a, b) => (a.role > b.role ? -1 : 1))]);
+  const mos = orbs.filter(o => o.kind === "mo").sort((a, b) => a.index - b.index);
+  if (mos.length) groups.push(["Canonical MOs", mos]);
+  const other = orbs.filter(o => o.kind === "other");
+  if (other.length) groups.push(["Other", other]);
+
+  el.innerHTML = "";
+  for (const [name, list] of groups) {
+    const g = document.createElement("div"); g.className = "group"; g.textContent = name; el.appendChild(g);
+    for (const o of list) {
+      const row = document.createElement("div"); row.className = "orb-row";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = o.shown;
+      cb.onchange = () => setShown(o, cb.checked);
+      const col = document.createElement("input"); col.type = "color"; col.value = o.color || "#999999";
+      col.title = "colour (+ lobe; − lobe is a lighter tint)";
+      col.oninput = () => { o.color = col.value; drawOrbital(o); viewer.render(); };
+      const lab = document.createElement("span");
+      lab.textContent = o.label + (o.index != null && o.kind === "nto" ? ` (${o.index})` : "");
+      lab.title = o.source;
+      const info = document.createElement("span"); info.className = "info";
+      info.textContent = o.kind === "nto" ? (o.n != null ? `n = ${fmt(o.n, 3)}` : "")
+                       : o.kind === "mo" && o.ev != null ? `${fmt(o.ev, 2)} eV` : "";
+      row.append(cb, col, lab, info);
+      el.appendChild(row);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- wiring
+function init() {
+  $("title").textContent = META.title;
+  document.title = META.title + " — orbital viewer";
+  $("subtitle").textContent = `${META.source} · ${states.length} singlet states · ${orbs.length} cube(s)` +
+                              (META.homo != null ? ` · HOMO = ${META.homo}` : "");
+  const sel = $("state-select");
+  for (const s of states) {
+    const o = document.createElement("option"); o.value = s.n;
+    o.textContent = `S${s.n}  ${fmt(s.ev)} eV  f=${s.fosc != null ? s.fosc.toFixed(4) : "–"}` + (ntoCubes(s.n).length ? "  ●" : "");
+    sel.appendChild(o);
+  }
+  sel.onchange = () => selectState(parseInt(sel.value));
+  const step = (d) => { const i = states.findIndex(s => s.n === selected); const t = states[i + d]; if (t) selectState(t.n); };
+  $("prev").onclick = () => step(-1);
+  $("next").onclick = () => step(1);
+
+  $("iso").oninput = () => { $("iso-val").textContent = parseFloat($("iso").value).toFixed(3); };
+  $("iso").onchange = redrawAll;
+  $("opacity").onchange = redrawAll;
+  $("style").onchange = applyStyle;
+  $("reset-view").onclick = () => { viewer.zoomTo(); viewer.render(); };
+  $("hide-all").onclick = () => orbs.filter(o => o.shown).forEach(o => setShown(o, false));
+  document.querySelectorAll("input[name=spec]").forEach(r => r.onchange = () => { specMode = r.value; drawSpectrum(); });
+  $("xunit").onchange = () => { xunit = $("xunit").value; drawSpectrum(); };
+  $("fwhm").onchange = drawSpectrum;
+  window.addEventListener("resize", () => viewer.resize());
+
+  drawSpectrum(); hookSpectrumClicks(); renderOrbList();
+  if (selected != null) selectState(selected);
+}
+init();
+</script>
+</body>
+</html>
